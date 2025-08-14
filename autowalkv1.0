@@ -1,0 +1,167 @@
+-- LocalScript: Auto Loop Multi Points (UI + Animation)
+-- Đặt vào StarterPlayerScripts hoặc StarterGui
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local ContextActionService = game:GetService("ContextActionService")
+
+local player = Players.LocalPlayer
+local character, humanoid, hrp
+
+local autoLoop = false
+local points = {}
+local speed = 16
+local reachThreshold = 2 -- khoảng cách tối thiểu để tính là đã tới điểm
+
+--========================
+-- UI SETUP
+--========================
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "AutoLoopUI"
+screenGui.ResetOnSpawn = false
+screenGui.Parent = player:WaitForChild("PlayerGui")
+
+-- Nút menu chính
+local menuButton = Instance.new("TextButton")
+menuButton.Size = UDim2.new(0, 120, 0, 35)
+menuButton.Position = UDim2.new(0.05, 0, 0.3, 0)
+menuButton.Text = "☰ Menu"
+menuButton.TextColor3 = Color3.new(1, 1, 1)
+menuButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+menuButton.BorderSizePixel = 0
+menuButton.Parent = screenGui
+
+-- Frame menu
+local menuFrame = Instance.new("Frame")
+menuFrame.Size = UDim2.new(0, 160, 0, 140)
+menuFrame.Position = menuButton.Position + UDim2.new(0, 0, 0, menuButton.Size.Y.Offset)
+menuFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+menuFrame.BorderSizePixel = 0
+menuFrame.Parent = screenGui
+menuFrame.Visible = false
+menuFrame.ClipsDescendants = true -- animation ẩn
+
+-- Bo góc
+local UICorner = Instance.new("UICorner")
+UICorner.CornerRadius = UDim.new(0, 6)
+UICorner.Parent = menuButton
+local UICorner2 = UICorner:Clone()
+UICorner2.Parent = menuFrame
+
+-- Các nút trong menu
+local toggleBtn = Instance.new("TextButton")
+toggleBtn.Size = UDim2.new(1, -10, 0, 30)
+toggleBtn.Position = UDim2.new(0, 5, 0, 5)
+toggleBtn.Text = "Auto: Tắt"
+toggleBtn.TextColor3 = Color3.new(1, 1, 1)
+toggleBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+toggleBtn.Parent = menuFrame
+
+local saveBtn = toggleBtn:Clone()
+saveBtn.Position = UDim2.new(0, 5, 0, 40)
+saveBtn.Text = "Lưu điểm"
+saveBtn.Parent = menuFrame
+
+local clearBtn = toggleBtn:Clone()
+clearBtn.Position = UDim2.new(0, 5, 0, 75)
+clearBtn.Text = "Xóa tất cả"
+clearBtn.BackgroundColor3 = Color3.fromRGB(120, 50, 50)
+clearBtn.Parent = menuFrame
+
+local statusLbl = Instance.new("TextLabel")
+statusLbl.Size = UDim2.new(1, -10, 0, 20)
+statusLbl.Position = UDim2.new(0, 5, 0, 110)
+statusLbl.BackgroundTransparency = 1
+statusLbl.Text = "Điểm: 0"
+statusLbl.TextColor3 = Color3.new(1, 1, 1)
+statusLbl.TextScaled = true
+statusLbl.Parent = menuFrame
+
+--========================
+-- ANIMATION OPEN/CLOSE
+--========================
+local menuOpen = false
+menuButton.Activated:Connect(function() -- Activated hỗ trợ cả PC & mobile
+	menuOpen = not menuOpen
+	if menuOpen then
+		menuFrame.Visible = true
+		menuFrame.Size = UDim2.new(0, 160, 0, 0)
+		local tween = TweenService:Create(menuFrame, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Size = UDim2.new(0, 160, 0, 140)})
+		tween:Play()
+	else
+		local tween = TweenService:Create(menuFrame, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {Size = UDim2.new(0, 160, 0, 0)})
+		tween:Play()
+		tween.Completed:Wait()
+		menuFrame.Visible = false
+	end
+end)
+
+--========================
+-- CHARACTER UPDATE
+--========================
+local function updateChar()
+	character = player.Character or player.CharacterAdded:Wait()
+	humanoid = character:WaitForChild("Humanoid")
+	hrp = character:WaitForChild("HumanoidRootPart")
+end
+updateChar()
+player.CharacterAdded:Connect(updateChar)
+
+--========================
+-- MOVE FUNCTION
+--========================
+local function blockControls(_, inputState)
+	return Enum.ContextActionResult.Sink
+end
+
+local function moveToPoint(pos)
+	if humanoid and hrp then
+		humanoid.WalkSpeed = speed
+		humanoid:MoveTo(pos)
+		while autoLoop and hrp and (hrp.Position - pos).Magnitude > reachThreshold do
+			RunService.Heartbeat:Wait()
+			humanoid:MoveTo(pos)
+		end
+	end
+end
+
+local function startLoop()
+	-- Chặn điều khiển
+	ContextActionService:BindAction("BlockMovement", blockControls, false, unpack(Enum.PlayerActions:GetEnumItems()))
+	while autoLoop and #points >= 2 do
+		for _, pos in ipairs(points) do
+			if not autoLoop then break end
+			moveToPoint(pos)
+		end
+	end
+	-- Mở lại điều khiển
+	ContextActionService:UnbindAction("BlockMovement")
+end
+
+--========================
+-- BUTTON EVENTS
+--========================
+toggleBtn.Activated:Connect(function()
+	if #points < 2 then
+		toggleBtn.Text = "Cần >= 2 điểm"
+		return
+	end
+	autoLoop = not autoLoop
+	toggleBtn.Text = autoLoop and "Auto: Bật" or "Auto: Tắt"
+	if autoLoop then
+		startLoop()
+	end
+end)
+
+saveBtn.Activated:Connect(function()
+	if hrp then
+		table.insert(points, hrp.Position)
+		statusLbl.Text = "Điểm: " .. tostring(#points)
+	end
+end)
+
+clearBtn.Activated:Connect(function()
+	points = {}
+	statusLbl.Text = "Điểm: 0"
+end)
