@@ -1,0 +1,339 @@
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+
+local CONFIG = {
+    FOV_PIXELS = 120,
+    SMOOTH = 0.18,
+    MAX_DIST = 300,
+    HEAD_OFFSET = Vector3.new(0, 0.1, 0),
+    PRED_NEAR = 0.08,
+    PRED_FAR = 0.22,
+    PRED_FAR_DIST = 200,
+    WELCOME = 2.2,
+    UI_BASE_WIDTH = 1366
+}
+
+local aimEnabled = false
+local predictEnabled = true
+local useFOV = true
+local currentFOV = CONFIG.FOV_PIXELS
+local smoothSpeed = CONFIG.SMOOTH
+local superAim = false
+local checkTeam = true -- Mới thêm: bật/tắt check team
+
+local rayParams = RaycastParams.new()
+rayParams.FilterType = Enum.RaycastFilterType.Blacklist
+rayParams.IgnoreWater = true
+
+local function lerp(a,b,t) return a + (b-a)*t end
+local function leadTime(dist)
+    local a = math.clamp(dist / CONFIG.PRED_FAR_DIST, 0, 1)
+    return lerp(CONFIG.PRED_NEAR, CONFIG.PRED_FAR, a)
+end
+
+local function isSameTeam(plr)
+    if LocalPlayer.Team and plr.Team then
+        return LocalPlayer.Team == plr.Team
+    end
+    return false
+end
+
+local function getCharParts(plr)
+    local ch = plr.Character
+    if not ch or not ch.Parent then return nil end
+    local hum = ch:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then return nil end
+    local head = ch:FindFirstChild("Head")
+    local hrp = ch:FindFirstChild("HumanoidRootPart")
+    if not head or not hrp then return nil end
+    return ch, head, hrp, hum
+end
+
+local function screenDist(worldPos)
+    local v3, on = Camera:WorldToViewportPoint(worldPos)
+    if not on then return math.huge end
+    local cx, cy = Camera.ViewportSize.X*0.5, Camera.ViewportSize.Y*0.5
+    local dx, dy = v3.X - cx, v3.Y - cy
+    return math.sqrt(dx*dx + dy*dy)
+end
+
+local function isVisible(point, targetChar)
+    local origin = Camera.CFrame.Position
+    rayParams.FilterDescendantsInstances = {LocalPlayer.Character}
+    local dir = point - origin
+    local res = workspace:Raycast(origin, dir, rayParams)
+    if not res then return true end
+    if targetChar and res.Instance and res.Instance:IsDescendantOf(targetChar) then return true end
+    return false
+end
+
+local function targetPoint(plr)
+    local ch, head, hrp = getCharParts(plr)
+    if not ch then return nil end
+    local pt = head.Position + CONFIG.HEAD_OFFSET
+    if predictEnabled then
+        local vel = hrp.AssemblyLinearVelocity or Vector3.zero
+        local dist = (pt - Camera.CFrame.Position).Magnitude
+        local t = leadTime(dist)
+        pt = pt + vel * t
+    end
+    return pt, ch, hrp
+end
+
+local function pickWithinFOV()
+    local bestPlr, bestPt
+    local bestScreen = math.huge
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and (not checkTeam or not isSameTeam(p)) then
+            local pt, ch, hrp = targetPoint(p)
+            if pt and hrp then
+                local worldDist = (hrp.Position - Camera.CFrame.Position).Magnitude
+                if worldDist <= CONFIG.MAX_DIST then
+                    local d = screenDist(pt)
+                    if d <= currentFOV and isVisible(pt, ch) then
+                        if d < bestScreen then
+                            bestScreen = d
+                            bestPlr = p
+                            bestPt = pt
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return bestPlr, bestPt
+end
+
+local function pickNearestVisible()
+    local bestPlr, bestPt
+    local bestWorld = math.huge
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and (not checkTeam or not isSameTeam(p)) then
+            local pt, ch, hrp = targetPoint(p)
+            if pt and hrp then
+                local worldDist = (hrp.Position - Camera.CFrame.Position).Magnitude
+                if worldDist <= CONFIG.MAX_DIST and isVisible(pt, ch) then
+                    if worldDist < bestWorld then
+                        bestWorld = worldDist
+                        bestPlr = p
+                        bestPt = pt
+                    end
+                end
+            end
+        end
+    end
+    return bestPlr, bestPt
+end
+
+local function pickBest()
+    if superAim then
+        return pickNearestVisible()
+    end
+    if useFOV then
+        return pickWithinFOV()
+    else
+        return pickNearestVisible()
+    end
+end
+
+RunService.RenderStepped:Connect(function()
+    if not aimEnabled then return end
+    local plr, pt = pickBest()
+    if plr and pt then
+        local cur = Camera.CFrame
+        local dest = CFrame.lookAt(cur.Position, pt)
+        if superAim then
+            Camera.CFrame = dest
+        else
+            Camera.CFrame = cur:Lerp(dest, math.clamp(smoothSpeed, 0.05, 1))
+        end
+    end
+end)
+
+local function createUI()
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "AimAssistUI"
+    gui.ResetOnSpawn = false
+    gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+    local uiScale = Instance.new("UIScale", gui)
+    local function updateScale()
+        local w = Camera.ViewportSize.X
+        uiScale.Scale = math.clamp(w / CONFIG.UI_BASE_WIDTH, 0.75, 1.2)
+    end
+    updateScale()
+    Camera:GetPropertyChangedSignal("ViewportSize"):Connect(updateScale)
+
+    local toast = Instance.new("Frame", gui)
+    toast.Size = UDim2.fromOffset(320, 64)
+    toast.Position = UDim2.new(0.5, -160, 0.12, 0)
+    toast.BackgroundColor3 = Color3.fromRGB(20,20,28)
+    Instance.new("UICorner", toast).CornerRadius = UDim.new(0,12)
+    local toastTxt = Instance.new("TextLabel", toast)
+    toastTxt.Size = UDim2.fromScale(1,1)
+    toastTxt.Text = "🎯 Aimbot ready — mở Menu để bật!"
+    toastTxt.BackgroundTransparency = 1
+    toastTxt.Font = Enum.Font.GothamBold
+    toastTxt.TextSize = 18
+    toastTxt.TextColor3 = Color3.fromRGB(230,235,255)
+    task.delay(CONFIG.WELCOME, function()
+        TweenService:Create(toast, TweenInfo.new(0.28), {BackgroundTransparency = 1}):Play()
+        TweenService:Create(toastTxt, TweenInfo.new(0.28), {TextTransparency = 1}):Play()
+        task.wait(0.3)
+        toast.Visible = false
+    end)
+
+    local fovCircle = Instance.new("Frame", gui)
+    fovCircle.Name = "FOVCircle"
+    fovCircle.AnchorPoint = Vector2.new(0.5,0.5)
+    fovCircle.Size = UDim2.fromOffset(currentFOV*2, currentFOV*2)
+    fovCircle.Position = UDim2.fromScale(0.5, 0.5)
+    fovCircle.BackgroundColor3 = Color3.fromRGB(110,160,255)
+    fovCircle.BackgroundTransparency = 0.9
+    fovCircle.Visible = useFOV and not superAim
+    local corner = Instance.new("UICorner", fovCircle); corner.CornerRadius = UDim.new(1,0)
+    local stroke = Instance.new("UIStroke", fovCircle); stroke.Color = Color3.fromRGB(120,170,255); stroke.Thickness = 1; stroke.Transparency = 0.35
+
+    local menuBtn = Instance.new("TextButton", gui)
+    menuBtn.Size = UDim2.fromOffset(56,56)
+    menuBtn.Position = UDim2.new(0,16,1,-86)
+    menuBtn.BackgroundColor3 = Color3.fromRGB(34,34,48)
+    menuBtn.Text = "☰"
+    menuBtn.Font = Enum.Font.GothamBold
+    menuBtn.TextSize = 22
+    menuBtn.TextColor3 = Color3.fromRGB(240,240,255)
+    Instance.new("UICorner", menuBtn).CornerRadius = UDim.new(1,0)
+    local mbStroke = Instance.new("UIStroke", menuBtn); mbStroke.Color = Color3.fromRGB(120,120,255); mbStroke.Transparency = 0.3; mbStroke.Thickness = 1
+
+    local panel = Instance.new("Frame", gui)
+    panel.Size = UDim2.fromOffset(320, 400)
+    panel.Position = UDim2.new(0, 84, 1, -476)
+    panel.BackgroundColor3 = Color3.fromRGB(20,20,28)
+    panel.Visible = false
+    Instance.new("UICorner", panel).CornerRadius = UDim.new(0,16)
+    local pStroke = Instance.new("UIStroke", panel); pStroke.Color = Color3.fromRGB(120,120,255); pStroke.Transparency = 0.4; pStroke.Thickness = 1
+
+    local title = Instance.new("TextLabel", panel)
+    title.Size = UDim2.fromOffset(280, 28)
+    title.Position = UDim2.fromOffset(16,8)
+    title.BackgroundTransparency = 1
+    title.Text = "AIM MENU"
+    title.Font = Enum.Font.GothamBlack
+    title.TextSize = 20
+    title.TextColor3 = Color3.fromRGB(235,240,255)
+    title.TextXAlignment = Enum.TextXAlignment.Left
+
+    local function makeToggle(text, y, initial, onChanged)
+        local row = Instance.new("Frame", panel)
+        row.Size = UDim2.fromOffset(288,40)
+        row.Position = UDim2.fromOffset(16,y)
+        row.BackgroundTransparency = 1
+        local lbl = Instance.new("TextLabel", row)
+        lbl.Size = UDim2.fromOffset(180,40)
+        lbl.Position = UDim2.fromOffset(0,0)
+        lbl.BackgroundTransparency = 1
+        lbl.Text = text
+        lbl.Font = Enum.Font.GothamMedium
+        lbl.TextSize = 16
+        lbl.TextColor3 = Color3.fromRGB(220,225,240)
+        lbl.TextXAlignment = Enum.TextXAlignment.Left
+        local btn = Instance.new("TextButton", row)
+        btn.Size = UDim2.fromOffset(68,28)
+        btn.Position = UDim2.fromOffset(200,6)
+        btn.AutoButtonColor = false
+        btn.BackgroundColor3 = initial and Color3.fromRGB(90,170,255) or Color3.fromRGB(60,62,78)
+        Instance.new("UICorner", btn).CornerRadius = UDim.new(1,0)
+        local knob = Instance.new("Frame", btn)
+        knob.Size = UDim2.fromOffset(24,24)
+        knob.Position = initial and UDim2.fromOffset(68-24-2,2) or UDim2.fromOffset(2,2)
+        knob.BackgroundColor3 = Color3.fromRGB(255,255,255)
+        Instance.new("UICorner", knob).CornerRadius = UDim.new(1,0)
+        local state = initial
+        btn.MouseButton1Click:Connect(function()
+            state = not state
+            local toX = state and (68-24-2) or 2
+            TweenService:Create(knob, TweenInfo.new(0.15), {Position = UDim2.fromOffset(toX,2)}):Play()
+            TweenService:Create(btn, TweenInfo.new(0.15), {BackgroundColor3 = state and Color3.fromRGB(90,170,255) or Color3.fromRGB(60,62,78)}):Play()
+            onChanged(state)
+        end)
+    end
+
+    local function makeSlider(text, y, minV, maxV, initV, onChanged)
+        local row = Instance.new("Frame", panel)
+        row.Size = UDim2.fromOffset(288,56)
+        row.Position = UDim2.fromOffset(16,y)
+        row.BackgroundTransparency = 1
+        local lbl = Instance.new("TextLabel", row)
+        lbl.Size = UDim2.fromOffset(240,20)
+        lbl.Position = UDim2.fromOffset(0,0)
+        lbl.BackgroundTransparency = 1
+        lbl.Text = string.format("%s: %d", text, initV)
+        lbl.Font = Enum.Font.GothamMedium
+        lbl.TextSize = 15
+        lbl.TextColor3 = Color3.fromRGB(220,225,240)
+        lbl.TextXAlignment = Enum.TextXAlignment.Left
+        local bar = Instance.new("Frame", row)
+        bar.Size = UDim2.fromOffset(288,8)
+        bar.Position = UDim2.fromOffset(0,30)
+        bar.BackgroundColor3 = Color3.fromRGB(60,62,78)
+        Instance.new("UICorner", bar).CornerRadius = UDim.new(1,0)
+        local fill = Instance.new("Frame", bar)
+        fill.Size = UDim2.fromOffset((initV - minV)/(maxV - minV) * 288, 8)
+        fill.BackgroundColor3 = Color3.fromRGB(120,170,255)
+        Instance.new("UICorner", fill).CornerRadius = UDim.new(1,0)
+        local dragging = false
+        local function setFromX(x)
+            local rel = math.clamp((x - bar.AbsolutePosition.X) / bar.AbsoluteSize.X, 0, 1)
+            local val = math.floor(minV + rel * (maxV - minV))
+            fill.Size = UDim2.fromOffset(rel * 288, 8)
+            lbl.Text = string.format("%s: %d", text, val)
+            onChanged(val)
+        end
+        bar.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+                dragging = true
+                setFromX(input.Position.X)
+            end
+        end)
+        bar.InputEnded:Connect(function() dragging = false end)
+        UserInputService.InputChanged:Connect(function(input)
+            if dragging and (input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseMovement) then
+                setFromX(input.Position.X)
+            end
+        end)
+    end
+
+    makeToggle("Bật Aim", 44, aimEnabled, function(v) aimEnabled = v end)
+    makeToggle("Dự đoán hướng", 90, predictEnabled, function(v) predictEnabled = v end)
+    makeToggle("Giới hạn FOV", 136, useFOV, function(v) useFOV = v; fovCircle.Visible = useFOV and not superAim end)
+    makeToggle("Super Aim", 182, superAim, function(v) superAim = v; fovCircle.Visible = useFOV and not superAim end)
+    makeToggle("Check Team", 228, checkTeam, function(v) checkTeam = v end) -- Mới thêm
+
+    makeSlider("FOV (px)", 274, 60, 320, currentFOV, function(v) currentFOV = v; fovCircle.Size = UDim2.fromOffset(currentFOV*2, currentFOV*2) end)
+    makeSlider("Mượt (%)", 342, 5, 90, math.floor(smoothSpeed*100), function(v) smoothSpeed = math.clamp(v/100, 0.05, 1) end)
+
+    menuBtn.MouseButton1Click:Connect(function()
+        panel.Visible = not panel.Visible
+        if panel.Visible then
+            TweenService:Create(panel, TweenInfo.new(0.14), {BackgroundTransparency = 0}):Play()
+        end
+    end)
+
+    task.spawn(function()
+        while gui.Parent do
+            fovCircle.Visible = useFOV and not superAim
+            fovCircle.Size = UDim2.fromOffset(currentFOV*2, currentFOV*2)
+            task.wait(0.05)
+        end
+    end)
+
+    return gui
+end
+
+if not LocalPlayer.Character then LocalPlayer.CharacterAdded:Wait() end
+createUI()
