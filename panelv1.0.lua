@@ -14,7 +14,8 @@
       • Spawn Classic Sword
       • God Mode (2 lớp)
       • Body Size slider realtime (-100 → 100)
-      • Troll Menu (5 trò): Plane Ride • Head Spin • Giant Arm Grab • Follow Magnet • Seat Attach
+      • HeadSit (chọn player → “ngồi” lên đầu, người khác cũng thấy)
+      • Troll Menu (5 trò fake client: Plane Ride • Head Spin • Giant Arm Grab • Follow Magnet • Seat Attach)
 --]]
 
 local Players = game:GetService("Players")
@@ -312,16 +313,97 @@ local floatEnabled = false
 local floatBV -- BodyVelocity cho float
 
 -- =========================
--- Troll states
+-- HeadSit state
+-- =========================
+local headSitActive = false
+local headSitConn
+local headSitTarget -- Player
+local headSitNoclipConn
+local headSitMiniUI
+
+local function cleanupHeadSit()
+	headSitActive = false
+	headSitTarget = nil
+	if headSitConn then headSitConn:Disconnect(); headSitConn = nil end
+	if headSitNoclipConn then headSitNoclipConn:Disconnect(); headSitNoclipConn = nil end
+	if headSitMiniUI then headSitMiniUI:Destroy(); headSitMiniUI = nil end
+end
+
+local function startHeadSit(targetPlr)
+	cleanupHeadSit()
+	headSitTarget = targetPlr
+	headSitActive = true
+
+	-- mini UI để thoát nhanh
+	headSitMiniUI = Instance.new("TextButton")
+	headSitMiniUI.Size = UDim2.new(0, 120, 0, 36)
+	headSitMiniUI.Position = UDim2.new(1, -132, 1, -48)
+	headSitMiniUI.AnchorPoint = Vector2.new(0,0)
+	headSitMiniUI.Text = "Thoát HeadSit"
+	headSitMiniUI.Font = Enum.Font.GothamBold
+	headSitMiniUI.TextSize = 14
+	headSitMiniUI.TextColor3 = Color3.fromRGB(255,255,255)
+	headSitMiniUI.BackgroundColor3 = Color3.fromRGB(60,0,80)
+	headSitMiniUI.Parent = screenGui
+	softCorner(headSitMiniUI, 10); fancyGradient(headSitMiniUI, Color3.fromRGB(255,100,160), Color3.fromRGB(120,0,255)); fancyStroke(headSitMiniUI, 1, Color3.fromRGB(255,255,255)); shadow(headSitMiniUI)
+	headSitMiniUI.MouseButton1Click:Connect(cleanupHeadSit)
+
+	local function setNoClip(char, on)
+		for _,p in ipairs(char:GetDescendants()) do
+			if p:IsA("BasePart") and p.CanCollide ~= (not on) then
+				p.CanCollide = not on
+			end
+		end
+	end
+
+	local function getHead(cfChar)
+		return cfChar and (cfChar:FindFirstChild("Head"))
+	end
+
+	headSitConn = RunService.Heartbeat:Connect(function()
+		if not headSitActive then return end
+		local myChar = player.Character
+		local myHum = myChar and myChar:FindFirstChildOfClass("Humanoid")
+		local myHRP = myChar and myChar:FindFirstChild("HumanoidRootPart")
+		local targetChar = headSitTarget and headSitTarget.Character
+		local targetHead = getHead(targetChar)
+		if not (myHRP and myHum and targetHead) then return end
+
+		-- vị trí ngồi: ngay trên đầu họ
+		local offsetY = 1.6 -- cao hơn đầu
+		local targetCF = targetHead.CFrame * CFrame.new(0, offsetY, 0)
+
+		-- xoay theo hướng của họ, có chút chỉnh để nhìn ra trước
+		local lookAt = (targetCF.Position + targetChar.PrimaryPart.CFrame.LookVector)
+		myHRP.CFrame = CFrame.new(targetCF.Position, lookAt)
+
+		-- giữ no-clip để không bị đẩy
+		setNoClip(myChar, true)
+		if myHum.Sit then myHum.Sit = false end -- tránh dính trạng thái ngồi vào ghế
+	end)
+
+	-- đảm bảo no-clip mỗi khung
+	headSitNoclipConn = RunService.RenderStepped:Connect(function()
+		if not headSitActive then return end
+		local myChar = player.Character
+		if myChar then
+			for _,p in ipairs(myChar:GetDescendants()) do
+				if p:IsA("BasePart") then p.CanCollide = false end
+			end
+		end
+	end)
+end
+
+-- =========================
+-- Troll states (client-fun)
 -- =========================
 local planeActive = false
 local planeSpinConn
 
 local headSpinActive = false
 local headSpinConn
-local savedNeckC0 -- original C0
+local savedNeckC0
 local function getNeck(char)
-	-- R15: UpperTorso.Neck ; R6: Torso.Neck
 	local neck
 	local upper = char:FindFirstChild("UpperTorso")
 	local torso = char:FindFirstChild("Torso")
@@ -339,24 +421,24 @@ local giantUpdateConn
 
 local magnetActive = false
 local magnetConn
-local magnetVisual -- sphere
+local magnetVisual
 local magnetRadius = 16
 
 local seatAttachActive = false
-local seatWelded -- Seat
+local seatWelded
 
 -- =========================
--- Troll builders
+-- Troll builders (client-fun)
 -- =========================
--- Plane Ride
 local function makeWeld(a,b)
 	local w = Instance.new("WeldConstraint")
 	w.Part0 = a; w.Part1 = b; w.Parent = a
 	return w
 end
 
+-- Plane Ride
 local function buildPlaneRig(char)
-	local hrp = char and char:FindChild("HumanoidRootPart") or char:FindFirstChild("HumanoidRootPart")
+	local hrp = char and char:FindFirstChild("HumanoidRootPart")
 	if not hrp then return end
 	local plane = Instance.new("Folder")
 	plane.Name = "PlaneRig"
@@ -455,7 +537,7 @@ local function toggleHeadSpin()
 	end
 end
 
--- Giant Arm Grab (cánh tay dài để "chạm" xa, đẩy người khác trên client mình)
+-- Giant Arm Grab
 local function unitLook(cf) return (cf.LookVector) end
 
 local function buildGiantArm(char)
@@ -469,11 +551,11 @@ local function buildGiantArm(char)
 
 	local rod = Instance.new("Part")
 	rod.Name = "GrabRod"
-	rod.Size = Vector3.new(0.4, 0.4, 20) -- dài
+	rod.Size = Vector3.new(0.4, 0.4, 20)
 	rod.Color = Color3.fromRGB(255, 170, 0)
 	rod.Material = Enum.Material.Neon
 	rod.Massless = true
-	rod.CanCollide = true -- để "đẩy" người khác
+	rod.CanCollide = true
 	rod.Parent = giantArmFolder
 
 	local weld = Instance.new("WeldConstraint")
@@ -482,7 +564,7 @@ local function buildGiantArm(char)
 	giantUpdateConn = RunService.RenderStepped:Connect(function()
 		if not rod.Parent or not rHand.Parent then return end
 		local look = unitLook(hrp.CFrame)
-		rod.CFrame = CFrame.new(rHand.Position, rHand.Position + look) * CFrame.new(0,0,-10) -- đẩy ra trước
+		rod.CFrame = CFrame.new(rHand.Position, rHand.Position + look) * CFrame.new(0,0,-10)
 	end)
 end
 
@@ -497,7 +579,8 @@ local function toggleGiantArm()
 	if giantArmActive then buildGiantArm(char) else removeGiantArm() end
 end
 
--- Follow Magnet (nam châm hút người khác khi lại gần) – client-side fun
+-- Follow Magnet
+local magnetVisual
 local function drawMagnetVisual(char)
 	local hrp = char:FindFirstChild("HumanoidRootPart"); if not hrp then return end
 	magnetVisual = Instance.new("Part")
@@ -536,9 +619,8 @@ local function toggleMagnet()
 					if th then
 						local d = (th.Position - hrp.Position).Magnitude
 						if d < magnetRadius then
-							-- Kéo nhẹ về phía mình (client-side)
 							local dir = (hrp.Position - th.Position).Unit
-							local newPos = th.Position + dir * 0.8 -- mỗi tick kéo 0.8 stud
+							local newPos = th.Position + dir * 0.8
 							th.CFrame = CFrame.new(newPos, newPos + th.CFrame.LookVector)
 						end
 					end
@@ -551,7 +633,7 @@ local function toggleMagnet()
 	end
 end
 
--- Seat Attach (gắn 1 ghế vào người mình để ai cũng có thể ngồi)
+-- Seat Attach
 local function toggleSeatAttach()
 	seatAttachActive = not seatAttachActive
 	local char = player.Character; if not char then return end
@@ -588,7 +670,7 @@ UIS.JumpRequest:Connect(function()
 	end
 end)
 
--- Float (đứng giữa không + vẫn di chuyển)
+-- Float
 createButton("💠 Float (toggle)", {Color3.fromRGB(0,200,255), Color3.fromRGB(0,120,255)}, function()
 	floatEnabled = not floatEnabled
 	local char = player.Character
@@ -637,7 +719,7 @@ createButton("❤️ Buff máu", {Color3.fromRGB(255,60,60), Color3.fromRGB(255,
 	end)
 end)
 
--- God Mode 2 lớp
+-- God Mode
 createButton("🛡️ God Mode (toggle)", {Color3.fromRGB(160,160,255), Color3.fromRGB(100,0,255)}, function()
 	godEnabled = not godEnabled
 	if godEnabled then
@@ -648,7 +730,7 @@ createButton("🛡️ God Mode (toggle)", {Color3.fromRGB(160,160,255), Color3.f
 	end
 end)
 
--- Body Size (slider realtime -100..100)
+-- Body Size slider
 createButton("🧍 Body Size (slider)", {Color3.fromRGB(0,255,170), Color3.fromRGB(0,180,255)}, function()
 	menuFrame.Visible = false
 	local panel = Instance.new("Frame")
@@ -713,11 +795,11 @@ createButton("🧍 Body Size (slider)", {Color3.fromRGB(0,255,170), Color3.fromR
 	knob.ImageColor3 = Color3.fromRGB(255,255,255)
 	knob.Parent = panel
 
-	local function setKnobByValue(v) -- v: -100..100
+	local function setKnobByValue(v)
 		v = math.clamp(v, -100, 100)
 		local x0 = bar.AbsolutePosition.X
 		local w = bar.AbsoluteSize.X
-		local alpha = (v + 100)/200 -- 0..1
+		local alpha = (v + 100)/200
 		local x = x0 + alpha * w
 		knob.Position = UDim2.fromOffset(x - 9, bar.AbsolutePosition.Y - 6)
 		fill.Size = UDim2.new(alpha, 0, 1, 0)
@@ -826,7 +908,7 @@ createButton("🌐 Server Hop", {Color3.fromRGB(0,255,120), Color3.fromRGB(0,200
 	end
 end)
 
--- Spawn Classic Sword (local basic)
+-- Spawn Classic Sword
 createButton("🗡️ Spawn Classic Sword", {Color3.fromRGB(255,200,0), Color3.fromRGB(255,0,0)}, function()
 	local char = player.Character
 	if not char then return end
@@ -887,7 +969,14 @@ createButton("🗡️ Spawn Classic Sword", {Color3.fromRGB(255,200,0), Color3.f
 	blade.Touched:Connect(onTouched)
 end)
 
--- ===== Troll Menu (5 trò) =====
+-- ===== HeadSit (trước Troll Menu) =====
+createButton("🪑 HeadSit (chọn người)", {Color3.fromRGB(255,140,0), Color3.fromRGB(255,0,160)}, function()
+	promptPlayerSelect(function(targetPlr)
+		startHeadSit(targetPlr)
+	end)
+end)
+
+-- ===== Troll Menu (5 trò fake client) =====
 local function openTrollMenu()
 	menuFrame.Visible = false
 	local frame = Instance.new("Frame")
@@ -932,22 +1021,12 @@ local function openTrollMenu()
 		b.MouseButton1Click:Connect(function() if cb then cb() end end)
 	end
 
-	-- 1) Plane Ride
-	tbtn("✈️ Plane Ride (toggle)", {Color3.fromRGB(0,255,200), Color3.fromRGB(0,140,255)}, function() togglePlane() end)
-
-	-- 2) Head Spin
+	tbtn("✈️ Plane Ride (toggle)", {Color3.fromRGB(0,255,200), Color3.fromRGB(0,140,255)}, function() planeActive = not planeActive; local c=player.Character if c then if planeActive then buildPlaneRig(c) else removePlaneRig(c) end end end)
 	tbtn("🌀 Head Spin (toggle)", {Color3.fromRGB(180,180,255), Color3.fromRGB(80,0,255)}, function() toggleHeadSpin() end)
-
-	-- 3) Giant Arm Grab
 	tbtn("💪 Giant Arm Grab (toggle)", {Color3.fromRGB(255,170,0), Color3.fromRGB(255,70,0)}, function() toggleGiantArm() end)
-
-	-- 4) Follow Magnet
 	tbtn("🧲 Follow Magnet (toggle)", {Color3.fromRGB(0,255,150), Color3.fromRGB(0,200,255)}, function() toggleMagnet() end)
-
-	-- 5) Seat Attach
 	tbtn("🪑 Seat Attach (toggle)", {Color3.fromRGB(255,120,120), Color3.fromRGB(255,0,160)}, function() toggleSeatAttach() end)
 
-	-- Close
 	local close = Instance.new("TextButton")
 	close.Size = UDim2.new(0, 28, 0, 28)
 	close.Position = UDim2.new(1, -38, 0, 10)
@@ -965,7 +1044,6 @@ local function openTrollMenu()
 	end)
 end
 
--- Nút mở Troll Menu (đặt cuối danh sách)
 createButton("😈 Troll Menu", {Color3.fromRGB(255,180,0), Color3.fromRGB(255,0,150)}, function()
 	openTrollMenu()
 end)
@@ -988,9 +1066,16 @@ player.CharacterAdded:Connect(function(char)
 	if planeActive then task.defer(function() removePlaneRig(char); buildPlaneRig(char) end) end
 	if headSpinActive then task.defer(function()
 		local neck = getNeck(char); if neck then savedNeckC0 = neck.C0 end
-		toggleHeadSpin(); toggleHeadSpin() -- bật lại (off->on để khởi động loop)
+		toggleHeadSpin(); toggleHeadSpin()
 	end) end
 	if giantArmActive then task.defer(function() removeGiantArm(); buildGiantArm(char) end) end
 	if magnetActive then task.defer(function() if magnetConn then magnetConn:Disconnect() end; toggleMagnet(); toggleMagnet() end) end
 	if seatAttachActive then task.defer(function() if seatWelded then seatWelded:Destroy() end; toggleSeatAttach(); end) end
+
+	-- nếu đang HeadSit thì nối lại theo target
+	if headSitActive and headSitTarget then
+		task.defer(function()
+			startHeadSit(headSitTarget)
+		end)
+	end
 end)
